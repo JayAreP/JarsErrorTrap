@@ -7,8 +7,7 @@ local function InitDB()
         JarsErrorTrapDB = {
             errors = {},
             maxErrors = 100,
-            iconX = -100,
-            iconY = 100,
+            minimapAngle = 45,
         }
     end
 end
@@ -23,33 +22,49 @@ local errorFrame
 
 -- Create icon button
 local function CreateIcon()
-    local icon = CreateFrame("Button", "JET_Icon", UIParent)
+    local icon = CreateFrame("Button", "JET_MinimapButton", Minimap)
     icon:SetSize(32, 32)
-    icon:SetPoint("CENTER", UIParent, "CENTER", JarsErrorTrapDB.iconX or -100, JarsErrorTrapDB.iconY or 100)
-    icon:SetMovable(true)
+    icon:SetFrameStrata("MEDIUM")
+    icon:SetFrameLevel(8)
     icon:EnableMouse(true)
     icon:RegisterForDrag("LeftButton")
-    icon:SetClampedToScreen(true)
+    icon:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    
+    -- Position on minimap
+    local angle = JarsErrorTrapDB.minimapAngle or 45
+    local radius = 110
+    local x = math.cos(angle) * radius + 10
+    local y = math.sin(angle) * radius - 10
+    icon:SetPoint("CENTER", Minimap, "CENTER", x, y)
     
     -- Background
     icon.bg = icon:CreateTexture(nil, "BACKGROUND")
-    icon.bg:SetAllPoints()
-    icon.bg:SetColorTexture(0.8, 0.2, 0.2, 0.9)
+    icon.bg:SetSize(20, 20)
+    icon.bg:SetPoint("CENTER")
+    icon.bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
     
     -- Icon texture (exclamation mark style)
     icon.texture = icon:CreateTexture(nil, "ARTWORK")
-    icon.texture:SetAllPoints()
+    icon.texture:SetSize(18, 18)
+    icon.texture:SetPoint("CENTER", -10, 10)
     icon.texture:SetTexture("Interface\\DialogFrame\\UI-Dialog-Icon-AlertNew")
     
+    -- Border
+    icon.border = icon:CreateTexture(nil, "OVERLAY")
+    icon.border:SetSize(52, 52)
+    icon.border:SetPoint("CENTER")
+    icon.border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    
     -- Error count badge
-    icon.count = icon:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    icon.count:SetPoint("CENTER", 0, -2)
+    icon.count = icon:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    -- icon.count:SetPoint("BOTTOM", 0, 2)
+    icon.count:SetPoint("CENTER")
     icon.count:SetTextColor(1, 1, 1)
     icon.count:SetText("0")
     
     -- Tooltip
     icon:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("Jar's Error Trap")
         GameTooltip:AddLine(errorCount .. " errors captured", 1, 1, 1)
         GameTooltip:AddLine("Click to view errors", 0.5, 0.5, 1)
@@ -79,24 +94,91 @@ local function CreateIcon()
         end
     end)
     
-    -- Drag to move
+    -- Drag to move around minimap
     icon:SetScript("OnDragStart", function(self)
-        self:StartMoving()
+        self:SetScript("OnUpdate", function(self)
+            local mx, my = Minimap:GetCenter()
+            -- Offset the center by 10px right and 10px down
+            mx = mx + 10
+            my = my - 10
+            local px, py = GetCursorPosition()
+            local scale = Minimap:GetEffectiveScale()
+            px, py = px / scale, py / scale
+            
+            local angle = math.atan2(py - my, px - mx)
+            local radius = 110
+            local x = math.cos(angle) * radius + 10
+            local y = math.sin(angle) * radius - 10
+            self:SetPoint("CENTER", Minimap, "CENTER", x, y)
+            
+            JarsErrorTrapDB.minimapAngle = angle
+        end)
     end)
     icon:SetScript("OnDragStop", function(self)
-        self:StopMovingOrSizing()
-        local point, _, _, x, y = self:GetPoint()
-        JarsErrorTrapDB.iconX = x
-        JarsErrorTrapDB.iconY = y
+        self:SetScript("OnUpdate", nil)
     end)
     
     return icon
 end
 
+-- Create error detail window
+local function CreateErrorDetailFrame()
+    local detailFrame = CreateFrame("Frame", "JET_ErrorDetailFrame", UIParent, "BasicFrameTemplateWithInset")
+    detailFrame:SetSize(650, 450)
+    detailFrame:SetPoint("LEFT", "JET_ErrorFrame", "RIGHT", 10, 0)
+    detailFrame:SetFrameStrata("FULLSCREEN")
+    detailFrame:SetMovable(true)
+    detailFrame:EnableMouse(true)
+    detailFrame:RegisterForDrag("LeftButton")
+    detailFrame:SetScript("OnDragStart", detailFrame.StartMoving)
+    detailFrame:SetScript("OnDragStop", detailFrame.StopMovingOrSizing)
+    detailFrame:SetClampedToScreen(true)
+    detailFrame:Hide()
+    
+    detailFrame.title = detailFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    detailFrame.title:SetPoint("TOP", 0, -5)
+    detailFrame.title:SetText("Error Details")
+    
+    -- Scrollable edit box for error text
+    local scrollFrame = CreateFrame("ScrollFrame", "JET_DetailScrollFrame", detailFrame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", 10, -30)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -30, 40)
+    
+    local editBox = CreateFrame("EditBox", nil, scrollFrame)
+    editBox:SetMultiLine(true)
+    editBox:SetMaxLetters(0)
+    editBox:SetFontObject("GameFontHighlight")
+    editBox:SetWidth(600)
+    editBox:SetAutoFocus(false)
+    editBox:EnableMouse(true)
+    editBox:SetScript("OnEscapePressed", function() detailFrame:Hide() end)
+    
+    scrollFrame:SetScrollChild(editBox)
+    detailFrame.editBox = editBox
+    
+    -- Close button
+    local closeBtn = CreateFrame("Button", nil, detailFrame, "GameMenuButtonTemplate")
+    closeBtn:SetSize(80, 25)
+    closeBtn:SetPoint("BOTTOM", 0, 10)
+    closeBtn:SetText("Close")
+    closeBtn:SetScript("OnClick", function() detailFrame:Hide() end)
+    
+    -- Function to show error
+    detailFrame.ShowError = function(self, error)
+        local errorText = string.format("Time: %s\n\nError Message:\n%s\n\nStack Trace:\n%s", 
+            error.time, error.message, error.stack or "No stack trace available")
+        self.editBox:SetText(errorText)
+        self.editBox:SetCursorPosition(0)
+        self:Show()
+    end
+    
+    return detailFrame
+end
+
 -- Create error review window
 local function CreateErrorFrame()
     local frame = CreateFrame("Frame", "JET_ErrorFrame", UIParent, "BasicFrameTemplateWithInset")
-    frame:SetSize(700, 500)
+    frame:SetSize(650, 600)
     frame:SetPoint("CENTER")
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -111,7 +193,7 @@ local function CreateErrorFrame()
         self:Update()
     end)
     
-    frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     frame.title:SetPoint("TOP", 0, -5)
     frame.title:SetText("Jar's Error Trap - Captured Errors")
     
@@ -122,11 +204,12 @@ local function CreateErrorFrame()
     
     -- Content frame
     local content = CreateFrame("Frame", nil, scrollFrame)
-    content:SetSize(640, 1)
+    content:SetSize(590, 1)
     scrollFrame:SetScrollChild(content)
     
     frame.content = content
     frame.scrollFrame = scrollFrame
+    frame.expandedErrors = {}  -- Track which errors are expanded
     
     -- Clear button
     local clearBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
@@ -143,33 +226,8 @@ local function CreateErrorFrame()
         frame:Update()
     end)
     
-    -- Copy Last button
-    local copyBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
-    copyBtn:SetSize(150, 25)
-    copyBtn:SetPoint("LEFT", clearBtn, "RIGHT", 5, 0)
-    copyBtn:SetText("Copy Last Error")
-    copyBtn:SetScript("OnClick", function()
-        if #errorLog > 0 then
-            local lastError = errorLog[#errorLog]
-            local copyText = string.format("[%s] %s\n%s", lastError.time, lastError.message, lastError.stack or "")
-            -- Show in a dialog for copying
-            StaticPopupDialogs["JET_COPY_ERROR"] = {
-                text = "Press Ctrl+C to copy:",
-                button1 = "Close",
-                timeout = 0,
-                whileDead = true,
-                hideOnEscape = true,
-                hasEditBox = true,
-                editBoxWidth = 350,
-                OnShow = function(self)
-                    self.editBox:SetText(copyText)
-                    self.editBox:HighlightText()
-                    self.editBox:SetFocus()
-                end,
-            }
-            StaticPopup_Show("JET_COPY_ERROR")
-        end
-    end)
+    -- Reference to error detail frame
+    frame.errorDetailFrame = nil
     
     -- Update function to rebuild error list
     frame.Update = function(self)
@@ -183,49 +241,108 @@ local function CreateErrorFrame()
         for i = #errorLog, 1, -1 do  -- Reverse order, newest first
             local error = errorLog[i]
             
+            -- Check if this error is expanded
+            local isExpanded = self.expandedErrors[i] or false
+            
             -- Error container
-            local errorBox = CreateFrame("Frame", nil, self.content)
+            local errorBox = CreateFrame("Button", nil, self.content)
             errorBox:SetPoint("TOPLEFT", 5, yOffset)
-            errorBox:SetSize(620, 80)
+            errorBox:SetSize(580, 30)  -- Start collapsed
             
             -- Background
             errorBox.bg = errorBox:CreateTexture(nil, "BACKGROUND")
             errorBox.bg:SetAllPoints()
             errorBox.bg:SetColorTexture(0.1, 0.1, 0.1, 0.8)
             
+            -- Expand/collapse button
+            errorBox.expandBtn = CreateFrame("Button", nil, errorBox)
+            errorBox.expandBtn:SetSize(20, 20)
+            errorBox.expandBtn:SetPoint("TOPLEFT", 5, -5)
+            
+            if isExpanded then
+                errorBox.expandBtn:SetNormalTexture("Interface\\Buttons\\UI-MinusButton-Up")
+                errorBox.expandBtn:SetPushedTexture("Interface\\Buttons\\UI-MinusButton-Down")
+                errorBox.expandBtn:SetHighlightTexture("Interface\\Buttons\\UI-MinusButton-Hilight", "ADD")
+            else
+                errorBox.expandBtn:SetNormalTexture("Interface\\Buttons\\UI-PlusButton-Up")
+                errorBox.expandBtn:SetPushedTexture("Interface\\Buttons\\UI-PlusButton-Down")
+                errorBox.expandBtn:SetHighlightTexture("Interface\\Buttons\\UI-PlusButton-Hilight", "ADD")
+            end
+            
             -- Timestamp
-            errorBox.time = errorBox:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            errorBox.time:SetPoint("TOPLEFT", 5, -5)
+            errorBox.time = errorBox:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            errorBox.time:SetPoint("LEFT", errorBox.expandBtn, "RIGHT", 5, 0)
             errorBox.time:SetText(error.time)
             errorBox.time:SetTextColor(0.7, 0.7, 0.7)
             
             -- Error count badge
-            errorBox.countText = errorBox:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            errorBox.countText:SetPoint("TOPRIGHT", -5, -5)
+            errorBox.countText = errorBox:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            errorBox.countText:SetPoint("TOPRIGHT", -40, -5)
             errorBox.countText:SetText("#" .. i)
             errorBox.countText:SetTextColor(1, 0.5, 0.5)
             
-            -- Error message
-            errorBox.message = errorBox:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-            errorBox.message:SetPoint("TOPLEFT", 5, -22)
-            errorBox.message:SetPoint("RIGHT", -5, 0)
+            -- Open button for this error
+            errorBox.openBtn = CreateFrame("Button", nil, errorBox, "UIPanelButtonTemplate")
+            errorBox.openBtn:SetSize(35, 20)
+            errorBox.openBtn:SetPoint("RIGHT", -5, 0)
+            errorBox.openBtn:SetText("Open")
+            errorBox.openBtn:SetScript("OnClick", function()
+                if not self.errorDetailFrame then
+                    self.errorDetailFrame = CreateErrorDetailFrame()
+                end
+                self.errorDetailFrame:ShowError(error)
+            end)
+            
+            -- Error message (always visible)
+            errorBox.message = errorBox:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+            errorBox.message:SetPoint("LEFT", errorBox.time, "RIGHT", 5, 0)
+            errorBox.message:SetPoint("RIGHT", errorBox.countText, "LEFT", -5, 0)
             errorBox.message:SetJustifyH("LEFT")
-            errorBox.message:SetMaxLines(2)
             errorBox.message:SetText(error.message)
             errorBox.message:SetTextColor(1, 0.3, 0.3)
             
-            -- Stack trace (truncated)
-            if error.stack then
-                errorBox.stack = errorBox:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-                errorBox.stack:SetPoint("TOPLEFT", 5, -50)
-                errorBox.stack:SetPoint("RIGHT", -5, 0)
-                errorBox.stack:SetJustifyH("LEFT")
-                errorBox.stack:SetMaxLines(2)
-                errorBox.stack:SetText(error.stack:sub(1, 200) .. (error.stack:len() > 200 and "..." or ""))
-                errorBox.stack:SetTextColor(0.8, 0.8, 0.8)
+            -- Stack trace container (initially hidden)
+            errorBox.stackContainer = CreateFrame("Frame", nil, errorBox)
+            errorBox.stackContainer:SetPoint("TOPLEFT", 30, -25)
+            errorBox.stackContainer:SetPoint("RIGHT", -5, 0)
+            
+            if isExpanded then
+                errorBox.stackContainer:Show()
+                errorBox.message:SetMaxLines(0)
+            else
+                errorBox.stackContainer:Hide()
+                errorBox.message:SetMaxLines(1)
             end
             
-            yOffset = yOffset - 85
+            if error.stack then
+                errorBox.stack = errorBox.stackContainer:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+                errorBox.stack:SetPoint("TOPLEFT")
+                errorBox.stack:SetPoint("RIGHT")
+                errorBox.stack:SetJustifyH("LEFT")
+                errorBox.stack:SetText(error.stack)
+                errorBox.stack:SetTextColor(0.8, 0.8, 0.8)
+                
+                -- Calculate stack trace height
+                local stackHeight = errorBox.stack:GetStringHeight()
+                errorBox.stackContainer:SetHeight(stackHeight + 5)
+            end
+            
+            -- Calculate errorBox height based on expansion state
+            if isExpanded then
+                local newHeight = 30 + (errorBox.stackContainer:GetHeight() or 0) + errorBox.message:GetStringHeight()
+                errorBox:SetHeight(newHeight)
+            else
+                errorBox:SetHeight(30)
+            end
+            
+            -- Toggle expand/collapse
+            local errorIndex = i  -- Capture in closure
+            errorBox.expandBtn:SetScript("OnClick", function()
+                self.expandedErrors[errorIndex] = not self.expandedErrors[errorIndex]
+                self:Update()
+            end)
+            
+            yOffset = yOffset - errorBox:GetHeight() - 5
         end
         
         self.content:SetHeight(math.abs(yOffset) + 10)
