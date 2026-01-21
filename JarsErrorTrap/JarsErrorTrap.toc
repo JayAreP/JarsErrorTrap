@@ -1,4 +1,4 @@
-## Interface: 120000
+## Interface: 120001, 120000
 ## Title: Jar's Error Trap
 ## Notes: Captures Lua errors and displays them in a review window
 ## Author: Jar
